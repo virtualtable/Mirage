@@ -37,19 +37,19 @@ local json = (function()
     }
     local escape_char_map_inv = { [ "/" ] = "/" }
     for k, v in pairs(escape_char_map) do escape_char_map_inv[v] = k end
-    
+
     local function escape_char(c)
         return "\\" .. (escape_char_map[c] or string.format("u%04x", c:byte()))
     end
-    
+
     local function encode_nil(val) return "null" end
-    
+
     local function encode_table(val, stack)
         local res = {}
         stack = stack or {}
         if stack[val] then error("circular reference") end
         stack[val] = true
-        
+
         if rawget(val, 1) ~= nil or next(val) == nil then
             local n = 0
             for k in pairs(val) do
@@ -69,31 +69,31 @@ local json = (function()
             return "{" .. table.concat(res, ",") .. "}"
         end
     end
-    
+
     local function encode_string(val)
         return '"' .. val:gsub('[%z\1-\31\\"]', escape_char) .. '"'
     end
-    
+
     local function encode_number(val)
         if val ~= val or val <= -math.huge or val >= math.huge then
             error("unexpected number value '" .. tostring(val) .. "'")
         end
         return string.format("%.14g", val)
     end
-    
+
     local type_func_map = {
         [ "nil" ] = encode_nil, [ "table" ] = encode_table,
         [ "string" ] = encode_string, [ "number" ] = encode_number,
         [ "boolean" ] = tostring,
     }
-    
+
     encode = function(val, stack)
         local t = type(val)
         local f = type_func_map[t]
         if f then return f(val, stack) end
         error("unexpected type '" .. t .. "'")
     end
-    
+
     function json.encode(val) return encode(val) end
     return json
 end)()
@@ -107,6 +107,15 @@ local base64 = (function()
 end)()
 
 local api = "http://212.64.211.214:2611"
+local KEY = getgenv().MIRAGE_KEY
+assert(type(KEY) == "string" and #KEY > 0, "Set your key before loading!")
+
+local function build_headers(content_type)
+    return {
+        ["Content-Type"] = content_type,
+        ["x-api-key"] = KEY
+    }
+end
 
 local getscriptbytecode = getscriptbytecode
 local encode = base64.encode
@@ -120,9 +129,7 @@ local function decompile(s)
     local response = request {
         Url = api .. "/decompile",
         Method = "POST",
-        Headers = {
-            ["Content-Type"] = has_options and "application/json" or "text/plain"
-        },
+        Headers = build_headers(has_options and "application/json" or "text/plain"),
         Body = has_options and json.encode({
             script = encoded,
             decompilerOptions = options
@@ -141,9 +148,7 @@ local function disassemble(s)
     local response = request {
         Url = api .. "/disassemble",
         Method = "POST",
-        Headers = {
-            ["Content-Type"] = "text/plain"
-        },
+        Headers = build_headers("text/plain"),
         Body = encode(getscriptbytecode(s))
     }
 
