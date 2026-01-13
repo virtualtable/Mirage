@@ -106,8 +106,10 @@ local base64 = (function()
     return{encode=b}
 end)()
 
-local api = "http://212.64.211.214:2611"
+local api = getgenv().MIRAGE_API or "http://212.64.211.214:2611"
 local KEY = getgenv().MIRAGE_KEY
+local LUA_RENAMER = getgenv().lua_renamer == true
+local LUA_ENHANCER = getgenv().lua_enhancer == true
 assert(type(KEY) == "string" and #KEY > 0, "Set your key before loading!")
 
 local function build_headers(content_type)
@@ -121,19 +123,25 @@ local getscriptbytecode = getscriptbytecode
 local encode = base64.encode
 local request = request
 
+local function ai_query()
+    local flags = {}
+    if LUA_RENAMER then table.insert(flags, "rename") end
+    if LUA_ENHANCER then table.insert(flags, "enhance") end
+    if #flags == 0 then
+        return ""
+    end
+    return "?ai=" .. table.concat(flags, ",")
+end
+
 local function decompile(s)
     local bytecode = getscriptbytecode(s)
     local encoded = encode(bytecode)
-    local has_options = next(options) ~= nil
 
     local response = request {
-        Url = api .. "/decompile",
+        Url = api .. "/decompile" .. ai_query(),
         Method = "POST",
-        Headers = build_headers(has_options and "application/json" or "text/plain"),
-        Body = has_options and json.encode({
-            script = encoded,
-            decompilerOptions = options
-        }) or encoded,
+        Headers = build_headers("text/plain"),
+        Body = encoded,
     }
 
     return
@@ -141,7 +149,7 @@ local function decompile(s)
         response.StatusCode == 429 and "-- Rate limited. Please wait before trying again." or
         response.StatusCode == 500 and "-- Decompilation failed!" or
         response.StatusCode == 400 and "-- Invalid request or options" or
-        "-- Something went wrong when decompiling: " .. response.StatusCode
+        "-- Something went wrong when decompiling either u have an unvalid license or service is down: " .. response.StatusCode
 end
 
 local function disassemble(s)
