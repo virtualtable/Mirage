@@ -1,171 +1,66 @@
 --[[
-    Mirage Decompiler/Disassembler
+    Mirage Decompiler/Disassembler Loader
     Licensed under NKSOFTWARE Public License
-    Parent Company: NKSOFTWARE
-    This is a public license for NKSOFTWARE public software only.
 ]]
 
-type RenamingType = "NONE" | "UNIQUE" | "UNIQUE_VALUE_BASED"
-
-type Options = {
-    renamingType: RenamingType?,
-    removeDotZero: boolean?,
-    removeFunctionEntryNote: boolean?,
-    swapConstantPosition: boolean?,
-    inlineWhileConditions: boolean?,
-    showFunctionLineDefined: boolean?,
-    removeUselessNumericForStep: boolean?,
-    removeUselessReturnInFunction: boolean?,
-    sugarRecursiveLocalFunctions: boolean?,
-    sugarLocalFunctions: boolean?,
-    sugarGlobalFunctions: boolean?,
-    sugarGenericFor: boolean?,
-    showFunctionDebugName: boolean?,
-    upvalueComment: boolean?
-}
-
-local options: Options = {}
-
---------------------------------------------------------------------------
-
-local json = (function()
-    local json = { _version = "1.0.1" }
-    local encode
-    local escape_char_map = {
-        [ "\\" ] = "\\", [ "\"" ] = "\"", [ "\b" ] = "b",
-        [ "\f" ] = "f", [ "\n" ] = "n", [ "\r" ] = "r", [ "\t" ] = "t",
-    }
-    local escape_char_map_inv = { [ "/" ] = "/" }
-    for k, v in pairs(escape_char_map) do escape_char_map_inv[v] = k end
-
-    local function escape_char(c)
-        return "\\" .. (escape_char_map[c] or string.format("u%04x", c:byte()))
-    end
-
-    local function encode_nil(val) return "null" end
-
-    local function encode_table(val, stack)
-        local res = {}
-        stack = stack or {}
-        if stack[val] then error("circular reference") end
-        stack[val] = true
-
-        if rawget(val, 1) ~= nil or next(val) == nil then
-            local n = 0
-            for k in pairs(val) do
-                if type(k) ~= "number" then error("invalid table: mixed or invalid key types") end
-                n = n + 1
-            end
-            if n ~= #val then error("invalid table: sparse array") end
-            for i, v in ipairs(val) do table.insert(res, encode(v, stack)) end
-            stack[val] = nil
-            return "[" .. table.concat(res, ",") .. "]"
-        else
-            for k, v in pairs(val) do
-                if type(k) ~= "string" then error("invalid table: mixed or invalid key types") end
-                table.insert(res, encode(k, stack) .. ":" .. encode(v, stack))
-            end
-            stack[val] = nil
-            return "{" .. table.concat(res, ",") .. "}"
-        end
-    end
-
-    local function encode_string(val)
-        return '"' .. val:gsub('[%z\1-\31\\"]', escape_char) .. '"'
-    end
-
-    local function encode_number(val)
-        if val ~= val or val <= -math.huge or val >= math.huge then
-            error("unexpected number value '" .. tostring(val) .. "'")
-        end
-        return string.format("%.14g", val)
-    end
-
-    local type_func_map = {
-        [ "nil" ] = encode_nil, [ "table" ] = encode_table,
-        [ "string" ] = encode_string, [ "number" ] = encode_number,
-        [ "boolean" ] = tostring,
-    }
-
-    encode = function(val, stack)
-        local t = type(val)
-        local f = type_func_map[t]
-        if f then return f(val, stack) end
-        error("unexpected type '" .. t .. "'")
-    end
-
-    function json.encode(val) return encode(val) end
-    return json
-end)()
-
-local base64 = (function()
-    local a='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-    local function b(c)
-        return(c:gsub('.',function(d)local e,a='',d:byte()for f=8,1,-1 do e=e..(a%2^f-a%2^(f-1)>0 and'1'or'0')end;return e end)..'0000'):gsub('%d%d%d?%d?%d?%d?',function(d)if#d<6 then return''end;local g=0;for f=1,6 do g=g+(d:sub(f,f)=='1'and 2^(6-f)or 0)end;return a:sub(g+1,g+1)end)..({'','==','='})[#c%3+1]
-    end
-    return{encode=b}
-end)()
-
-local api = getgenv().MIRAGE_API or "http://212.64.211.214:2611"
+local api = getgenv().MIRAGE_API or "https://api.ninjakernel.dev"
 local KEY = getgenv().MIRAGE_KEY
 local LUA_RENAMER = getgenv().lua_renamer == true
 local LUA_ENHANCER = getgenv().lua_enhancer == true
-assert(type(KEY) == "string" and #KEY > 0, "Set your key before loading!")
 
-local function build_headers(content_type)
+assert(type(KEY) == "string" and #KEY > 0, "Set your MIRAGE_KEY before loading!")
+
+local getscriptbytecode = getscriptbytecode
+local request = request
+
+-- highly optimized local base64 encoder
+local base64_encode = (function()
+    local a='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+    return function(c)
+        return(c:gsub('.',function(d)local e,a='',d:byte()for f=8,1,-1 do e=e..(a%2^f-a%2^(f-1)>0 and'1'or'0')end;return e end)..'0000'):gsub('%d%d%d?%d?%d?%d?',function(d)if#d<6 then return''end;local g=0;for f=1,6 do g=g+(d:sub(f,f)=='1'and 2^(6-f)or 0)end;return a:sub(g+1,g+1)end)..({'','==','='})[#c%3+1]
+    end
+end)()
+
+local function build_headers()
     return {
-        ["Content-Type"] = content_type,
+        ["Content-Type"] = "text/plain",
         ["x-api-key"] = KEY
     }
 end
-
-local getscriptbytecode = getscriptbytecode
-local encode = base64.encode
-local request = request
 
 local function ai_query()
     local flags = {}
     if LUA_RENAMER then table.insert(flags, "rename") end
     if LUA_ENHANCER then table.insert(flags, "enhance") end
-    if #flags == 0 then
-        return ""
-    end
+    if #flags == 0 then return "" end
     return "?ai=" .. table.concat(flags, ",")
 end
 
-local function decompile(s)
-    local bytecode = getscriptbytecode(s)
-    local encoded = encode(bytecode)
-
+getgenv().decompile = function(s)
+    local encoded = base64_encode(getscriptbytecode(s))
     local response = request {
         Url = api .. "/decompile" .. ai_query(),
         Method = "POST",
-        Headers = build_headers("text/plain"),
+        Headers = build_headers(),
         Body = encoded,
     }
-
-    return
-        response.StatusCode == 200 and response.Body or
-        response.StatusCode == 429 and "-- Rate limited. Please wait before trying again." or
-        response.StatusCode == 500 and "-- Decompilation failed!" or
-        response.StatusCode == 400 and "-- Invalid request or options" or
-        "-- Something went wrong when decompiling either u have an unvalid license or service is down: " .. response.StatusCode
+    if response.StatusCode == 200 then return response.Body end
+    if response.StatusCode == 429 then return "-- Rate limited. Please wait." end
+    if response.StatusCode == 500 then return "-- Decompilation failed!" end
+    if response.StatusCode == 400 then return "-- Invalid request or missing options." end
+    return "-- Something went wrong: " .. response.StatusCode
 end
 
-local function disassemble(s)
+getgenv().disassemble = function(s)
+    local encoded = base64_encode(getscriptbytecode(s))
     local response = request {
         Url = api .. "/disassemble",
         Method = "POST",
-        Headers = build_headers("text/plain"),
-        Body = encode(getscriptbytecode(s))
+        Headers = build_headers(),
+        Body = encoded
     }
-
-    return
-        response.StatusCode == 200 and response.Body or
-        response.StatusCode == 429 and "-- Rate limited. Please wait before trying again." or
-        response.StatusCode == 500 and "-- Disassembly failed!" or
-        "-- Something went wrong when disassembling: " .. response.StatusCode
+    if response.StatusCode == 200 then return response.Body end
+    if response.StatusCode == 429 then return "-- Rate limited. Please wait." end
+    if response.StatusCode == 500 then return "-- Disassembly failed!" end
+    return "-- Something went wrong: " .. response.StatusCode
 end
-
-getgenv().decompile = decompile
-getgenv().disassemble = disassemble
